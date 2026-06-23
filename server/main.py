@@ -1,7 +1,11 @@
 import os
+import re
 import uuid
 import base64
+import io
+import json
 import requests
+import fitz
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -26,7 +30,7 @@ def get_baidu_ocr_token():
     """获取百度 OCR 的 access_token"""
     url = "https://aip.baidubce.com/oauth/2.0/token"
     params = {
-        "grant_type": "client_token",
+        "grant_type": "client_credentials",
         "client_id": config.BAIDU_OCR_API_KEY,
         "client_secret": config.BAIDU_OCR_SECRET_KEY,
     }
@@ -114,9 +118,28 @@ async def ocr_invoice(file: UploadFile = File(...)):
                 content={"code": 400, "detail": "上传的文件为空，请重新上传"}
             )
         
-        # 转换为 base64
-        image_base64 = base64.b64encode(image_data).decode('utf-8')
-        print("[DEBUG] ✅ Base64编码完成")
+        # 处理 PDF 文件：转图片再 OCR
+        if file.content_type == 'application/pdf' or file.filename.lower().endswith('.pdf'):
+            print("[DEBUG] 检测到PDF文件，转换为图片...")
+            try:
+                pdf_doc = fitz.open(stream=image_data, filetype="pdf")
+                # 取第一页
+                page = pdf_doc[0]
+                pix = page.get_pixmap(dpi=200)
+                img_bytes = pix.tobytes("png")
+                image_base64 = base64.b64encode(img_bytes).decode('utf-8')
+                pdf_doc.close()
+                print(f"[DEBUG] PDF转换完成: 第一页 -> PNG ({len(img_bytes)} 字节)")
+            except Exception as pdf_e:
+                print(f"[ERROR] PDF转换失败: {pdf_e}")
+                return JSONResponse(
+                    status_code=400,
+                    content={"code": 400, "detail": "PDF文件处理失败，请尝试图片格式"}
+                )
+        else:
+            # 普通图片
+            image_base64 = base64.b64encode(image_data).decode('utf-8')
+            print("[DEBUG] ✅ Base64编码完成")
         
         # 调用百度 OCR
         print("[DEBUG] 正在调用百度OCR...")
@@ -131,8 +154,12 @@ async def ocr_invoice(file: UploadFile = File(...)):
         
         # 检查OCR错误
         if "error" in ocr_result:
-            error_msg = ocr_result.get("error", {}).get("msg", "未知错误")
-            print(f"[ERROR] ❌ OCR返回错误: {error_msg}")
+            err_val = ocr_result.get("error", "未知错误")
+            if isinstance(err_val, dict):
+                error_msg = err_val.get("msg", str(err_val))
+            else:
+                error_msg = str(err_val)
+            print(f"[ERROR] OCR返回错误: {error_msg}")
             return JSONResponse(
                 status_code=500,
                 content={"code": 500, "detail": f"OCR识别失败: {error_msg}"}
@@ -158,7 +185,22 @@ async def ocr_invoice(file: UploadFile = File(...)):
                 content={"code": 500, "detail": "未识别到任何文字，请确认发票图片清晰"}
             )
         
-        # 提取关键字段
+        # ===== 发票验证 =====
+        # 检查是否包含发票关键词
+        invoice_keywords = ["发票", "发票代码", "发票号码", "税务局", "税务"]
+        is_invoice = any(kw in full_text for kw in invoice_keywords)
+        
+        print(f"[DEBUG] 发票验证: {'是发票' if is_invoice else '非发票'} | 关键词匹配: {[kw for kw in invoice_keywords if kw in full_text]}")
+        
+        # 非发票：返回特殊 code 让前端提示
+        if not is_invoice and len(words) < 5:
+            print("[WARN] OCR结果非发票")
+            return JSONResponse(
+                status_code=200,
+                content={"code": 1, "detail": "上传的不是发票，请确认上传发票图片"}
+            )
+        
+        # ===== 改进的发票信息提取 =====
         invoice_data = {
             "full_text": full_text,
             "number": "",
@@ -167,47 +209,114 @@ async def ocr_invoice(file: UploadFile = File(...)):
             "date": ""
         }
         
-        for line in words:
-            line_clean = line.replace(" ", "").replace("\t", "")
-            if "号码" in line_clean or "No." in line or "发票号码" in line_clean:
-                import re
-                match = re.search(r'[\dA-Za-z]+', line_clean)
-                if match:
-                    invoice_data["number"] = match.group()
-            if "金额" in line_clean and "税" not in line_clean:
-                import re
-                match = re.search(r'(\d+\.?\d*)', line_clean)
-                if match:
-                    invoice_data["amount"] = match.group()
-            if "销售方" in line_clean or "销方" in line_clean or "收款人" in line_clean:
-                import re
-                match = re.search(r'[:：]\s*(.+?)(?:\s|$)', line_clean)
-                if match:
-                    invoice_data["seller"] = match.group(1).strip()
-            if "开票日期" in line_clean or "日期" in line_clean:
-                import re
-                match = re.search(r'(\d{4}[-年]\d{1,2}[-月]\d{1,2})', line_clean)
-                if match:
-                    invoice_data["date"] = match.group(1).replace("年", "-").replace("月", "-")
+        # 合并所有文本为一行，方便搜索
+        all_text = " ".join(words)
+        all_text_clean = all_text.replace(" ", "").replace("\t", "")
         
-        # 如果seller还是空，尝试取第一行含"公司"或"有限"的内容
+        # 1. 发票号码：多种格式
+        num_patterns = [
+            r'发票号码?[：:]\s*(\w+)',
+            r'发票代码[：:]\s*(\w+)',
+            r'No[.：:]\s*(\w+)',
+            r'号码[：:]\s*(\w+)',
+            r'(\d{8}[\dXx]{4})',  # 12位发票号
+        ]
+        for pat in num_patterns:
+            match = re.search(pat, all_text)
+            if match:
+                invoice_data["number"] = match.group(1)
+                break
+        
+        # 2. 金额
+        amount_patterns = [
+            r'价税合计[\(（]大写[\)）]?[：:^\d]*[\(（]小写[\)）]?[：:]\s*[¥￥]?(\d+\.\d{2})',
+            r'价税合计[：:]\s*[¥￥]?(\d+\.?\d*)',
+            r'合计[：:]\s*[¥￥]?(\d+\.?\d*)',
+            r'小写[\)）]?[：:]\s*[¥￥]?(\d+\.?\d*)',
+            r'金额[：:]\s*[¥￥]?(\d+\.?\d*)',
+            r'税额[：:]\s*[¥￥]?(\d+\.?\d*)',
+            r'价税合计[\(（]小写[\)）]?[：:]*\s*[¥￥]?(\d+\.\d{2})',
+            r'小写[\(（].*?[\)）][：:]*\s*[¥￥]?(\d+\.\d{2})',
+        ]
+        for pat in amount_patterns:
+            match = re.search(pat, all_text)
+            if match:
+                invoice_data["amount"] = match.group(1)
+                break
+        
+        # 3. 销售方（销方名称）
+        seller_patterns = [
+            r'(?:销售方|销方|收款人)[\(（]名称[\)）]?[：:]\s*(.+?)(?:\s{2,}|$)',
+            r'(?:销售方|销方)[：:]\s*(.+?)(?:\s{2,}|$)',
+            r'名称[：:]\s*(.+?公司)',
+            r'(.+?有限公司)',
+            r'(.+?有限责任公司)',
+            r'(.+?集团)',
+            r'(.+?厂)',
+        ]
+        for line in words:
+            for pat in seller_patterns:
+                match = re.search(pat, line)
+                if match:
+                    name = match.group(1).strip()
+                    if len(name) > 2 and len(name) < 50:
+                        invoice_data["seller"] = name
+                        break
+            if invoice_data["seller"]:
+                break
+        
+        # 后备：任何包含"公司"的行
         if not invoice_data["seller"]:
             for line in words:
-                if "公司" in line or "有限" in line or "集团" in line:
-                    invoice_data["seller"] = line.strip()
+                if "公司" in line or "有限" in line:
+                    invoice_data["seller"] = line.strip().replace(" ", "")
                     break
         
-        # 如果amount还是空，尝试找包含"合计"的行
-        if not invoice_data["amount"]:
-            for line in words:
-                if "合计" in line:
-                    import re
-                    match = re.search(r'(\d+\.?\d*)', line)
-                    if match:
-                        invoice_data["amount"] = match.group()
-                        break
+        # 4. 开票日期
+        date_patterns = [
+            r'开票日期[：:]\s*(\d{4}[-年.]\d{1,2}[-月.]\d{1,2})',
+            r'日期[：:]\s*(\d{4}[-年.]\d{1,2}[-月.]\d{1,2})',
+            r'(\d{4})年(\d{1,2})月(\d{1,2})日',
+        ]
+        for pat in date_patterns:
+            match = re.search(pat, all_text)
+            if match:
+                raw = match.group(0)
+                invoice_data["date"] = raw.replace("年", "-").replace("月", "-").replace("日", "").replace(".", "-")
+                break
         
-        print(f"[DEBUG] ✅ 提取结果: 号码={invoice_data['number']}, 金额={invoice_data['amount']}, 销方={invoice_data['seller'][:20]}")
+        # 5. 如果以上字段提取不完整，尝试用 DeepSeek 补全
+        missing_fields = [k for k in ["number", "amount", "seller", "date"] if not invoice_data[k]]
+        if missing_fields:
+            print(f"[DEBUG] 字段缺失({len(missing_fields)}个): {missing_fields}，尝试DeepSeek补全...")
+            try:
+                ds_prompt = f"""从以下发票OCR识别文本中提取关键信息，只返回JSON格式，不要多余文字：
+
+ocr文本：
+{full_text}
+
+请提取：
+1. number: 发票号码
+2. amount: 金额（纯数字）
+3. seller: 销售方名称
+4. date: 开票日期
+
+返回格式：{{"number":"","amount":"","seller":"","date":""}}
+"""
+                ds_result = call_deepseek(ds_prompt)
+                if ds_result:
+                    # 尝试从DeepSeek结果中提取JSON
+                    json_match = re.search(r'\{[^{}]*\}', ds_result)
+                    if json_match:
+                        ds_data = json.loads(json_match.group())
+                        for k in missing_fields:
+                            if ds_data.get(k) and not invoice_data[k]:
+                                invoice_data[k] = ds_data[k]
+                                print(f"[DEBUG] DeepSeek补全 {k}={ds_data[k]}")
+            except Exception as ds_err:
+                print(f"[DEBUG] DeepSeek补全省略: {ds_err}")
+        
+        print(f"[DEBUG] ✅ 提取结果: 号码={invoice_data['number']}, 金额={invoice_data['amount']}, 销方={invoice_data['seller'][:20] if invoice_data.get('seller') else ''}, 日期={invoice_data['date']}")
         
         return {
             "code": 0,
