@@ -1,0 +1,13 @@
+{
+  "id": "contract-review",
+  "name": "合同初审",
+  "description": "新旧版本合同对比 + AI风险审查",
+  "version": "1.0.0",
+  "icon": "📄",
+  "developer": "深圳数智元",
+  "category": "official",
+  "status": "enabled",
+  "tags": ["新上线"],
+  "entry": "ContractApp.vue",
+  "categories": ["总经办", "财务法务"]
+}

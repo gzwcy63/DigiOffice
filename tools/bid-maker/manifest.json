@@ -1,0 +1,13 @@
+{
+  "id": "bid-maker",
+  "name": "标书自动编制",
+  "description": "解析招标文件，生成投标文件",
+  "version": "1.0.0",
+  "icon": "📑",
+  "developer": "深圳数智元",
+  "category": "official",
+  "status": "enabled",
+  "tags": ["新上线"],
+  "entry": "BidApp.vue",
+  "categories": ["总经办", "市场销售", "技术项目"]
+}

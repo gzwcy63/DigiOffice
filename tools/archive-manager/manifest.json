@@ -1,0 +1,13 @@
+{
+  "id": "archive-manager",
+  "name": "档案管理",
+  "description": "文件分类存放、智能查找、查重去重",
+  "version": "1.0.0",
+  "icon": "🗂️",
+  "developer": "深圳数智元",
+  "category": "official",
+  "status": "enabled",
+  "tags": ["新上线"],
+  "entry": "ArchiveApp.vue",
+  "categories": ["人事行政", "财务法务", "技术项目"]
+}

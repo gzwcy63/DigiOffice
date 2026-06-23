@@ -1,0 +1,25 @@
+C:\Users\gssd\Desktop\SZYG\DeepSeek\
+├── package.json
+├── vite.config.js          ← 刚修复的文件
+├── index.html
+└── src/
+    ├── App.vue             ← 已创建
+    ├── main.js
+    ├── router/
+    │   └── index.js
+    ├── stores/
+    │   ├── user.js
+    │   └── tool.js
+    ├── layouts/
+    │   └── MainLayout.vue
+    ├── views/
+    │   ├── HomePage.vue    ← 已创建
+    │   ├── SettingsPage.vue
+    │   └── ToolContainer.vue
+    ├── components/
+    │   ├── AnnouncementBar.vue
+    │   ├── ToolCard.vue
+    │   └── LoginModal.vue
+    └── tools/
+        └── expense/
+            └── ExpenseApp.vue

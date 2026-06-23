@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+server/.env
+server/generated/
+server/__pycache__/
+*.pyc
+.DS_Store
+开发文件备份/

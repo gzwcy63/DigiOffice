@@ -1,0 +1,13 @@
+{
+  "id": "industry-news",
+  "name": "行业动态",
+  "description": "聚合行业信息，自动生成动态报告",
+  "version": "1.0.0",
+  "icon": "📰",
+  "developer": "深圳数智元",
+  "category": "official",
+  "status": "enabled",
+  "tags": ["新上线"],
+  "entry": "NewsApp.vue",
+  "categories": ["总经办", "市场销售", "技术项目"]
+}

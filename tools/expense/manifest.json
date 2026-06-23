@@ -1,0 +1,13 @@
+{
+  "id": "expense",
+  "name": "发票报销",
+  "description": "上传发票图片，自动识别生成报销单",
+  "version": "2.0.0",
+  "icon": "🧾",
+  "developer": "深圳数智元",
+  "category": "official",
+  "status": "enabled",
+  "tags": ["新升级"],
+  "entry": "ExpenseApp.vue",
+  "categories": ["人事行政", "财务法务"]
+}

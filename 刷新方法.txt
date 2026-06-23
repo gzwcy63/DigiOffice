@@ -1,0 +1,3 @@
+C:\Users\gssd\Desktop\SZYG\DeepSeek>npm run dev
+
+http://localhost:5173/
