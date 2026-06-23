@@ -330,51 +330,158 @@ ocr文本：
             content={"code": 500, "detail": f"服务器内部错误: {str(e)}"}
         )
 
+# ================= 金额转大写 =================
+def amount_to_chinese(n):
+    """数字金额转中文大写，如 1280.50 → 壹仟贰佰捌拾元伍角"""
+    units = ["", "拾", "佰", "仟", "万", "拾", "佰", "仟", "亿"]
+    digits = ["零", "壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖"]
+    try:
+        n = round(float(n), 2)
+    except:
+        return "零元整"
+    integer_part = int(n)
+    decimal_part = round((n - integer_part) * 100)
+    
+    if integer_part == 0 and decimal_part == 0:
+        return "零元整"
+    
+    # 处理整数部分
+    int_str = str(integer_part)
+    result = ""
+    zero_flag = False
+    need_unit = True
+    
+    for i, ch in enumerate(reversed(int_str)):
+        if ch != '0':
+            if zero_flag:
+                result = "零" + result
+                zero_flag = False
+            unit = units[i] if i < len(units) else ""
+            result = digits[int(ch)] + unit + result
+        else:
+            zero_flag = True
+    
+    result += "元"
+    
+    # 小数部分
+    if decimal_part == 0:
+        result += "整"
+    else:
+        jiao = decimal_part // 10
+        fen = decimal_part % 10
+        if jiao > 0:
+            result += digits[jiao] + "角"
+        if fen > 0:
+            result += digits[fen] + "分"
+    
+    return result
+
 @app.post("/api/generate_word")
 async def generate_word(
     department: str = Form(...),
     operator: str = Form(...),
-    category: str = Form(...),
+    category: str = Form(""),
     amount: str = Form(...),
     remark: str = Form(""),
     report_date: str = Form(...),
     invoice_number: str = Form(""),
-    seller: str = Form("")
+    seller: str = Form(""),
+    leader_approval: str = Form(""),
+    dept_audit: str = Form(""),
+    accountant: str = Form(""),
+    cashier: str = Form(""),
+    original_loan: str = Form(""),
+    refund: str = Form(""),
+    items_json: str = Form("[]")  # JSON array of {purpose, amount, remark}
 ):
-    """生成报销单 Word 文档"""
+    """根据模板生成报销单 Word 文档"""
     try:
-        doc = Document()
-        title = doc.add_heading('报销单', 0)
-        title.alignment = 1
+        import json
         
-        table = doc.add_table(rows=8, cols=2)
-        table.style = 'Table Grid'
+        # 使用模板
+        template_path = os.path.join(os.path.dirname(__file__), "模板_费用报销单.docx")
+        if os.path.exists(template_path):
+            doc = Document(template_path)
+        else:
+            doc = Document()
+            # 如果模板不存在，从头创建
+            doc.add_heading('费用报销单', 0)
+            doc.add_paragraph()
+            table = doc.add_table(rows=1, cols=3)
+            table.style = 'Table Grid'
+            hdr = table.rows[0].cells
+            hdr[0].text = '用途'
+            hdr[1].text = '金额（元）'
+            hdr[2].text = '备注'
         
-        fields = [
-            ("部门", department),
-            ("报销人", operator),
-            ("类别", category),
-            ("金额", f"¥{amount}"),
-            ("备注", remark),
-            ("报销时间", report_date),
-            ("发票号码", invoice_number or "无"),
-            ("销方", seller or "无")
-        ]
+        # 填充表格数据（Table 0 为主表）
+        if doc.tables:
+            main_table = doc.tables[0]
+            items = json.loads(items_json) if items_json else []
+            
+            # 填充行数据
+            data_rows = min(len(items), 3)  # 最多填3行
+            for i in range(data_rows):
+                if i + 1 < len(main_table.rows):
+                    row = main_table.rows[i + 1]
+                    row.cells[0].text = items[i].get("purpose", "")
+                    row.cells[1].text = str(items[i].get("amount", ""))
+                    row.cells[2].text = items[i].get("remark", "")
+            
+            # 填充合计行（第6行索引5）
+            if len(main_table.rows) > 5:
+                main_table.rows[5].cells[0].text = "合    计"
+                main_table.rows[5].cells[1].text = amount
+            
+            # 金额大写行（第7行索引6）
+            if len(main_table.rows) > 6:
+                main_table.rows[6].cells[0].text = "金额大写：" + amount_to_chinese(amount)
+                main_table.rows[6].cells[1].text = "金额大写：" + amount_to_chinese(amount)
+                if original_loan:
+                    main_table.rows[6].cells[2].text = "原借款：" + original_loan
+                    main_table.rows[6].cells[3].text = "原借款：" + original_loan
+                if refund:
+                    main_table.rows[6].cells[4].text = "应退余款：" + refund
+                    main_table.rows[6].cells[5].text = "应退余款：" + refund
         
-        for i, (label, value) in enumerate(fields):
-            row = table.rows[i]
-            row.cells[0].text = label
-            row.cells[0].paragraphs[0].runs[0].bold = True
-            row.cells[1].text = value
+        # 填充段落文本（报销部门、日期等）
+        for p in doc.paragraphs:
+            text = p.text
+            if "报销部门" in text:
+                for run in p.runs:
+                    if "报销部门" in run.text:
+                        run.text = f"报销部门：{department}"
+            if "年   月   日" in text:
+                for run in p.runs:
+                    if "年   月   日" in run.text:
+                        run.text = f" {report_date} "
+            if "单据及附件" in text:
+                for run in p.runs:
+                    if "单据及附件" in run.text:
+                        run.text = f"单据及附件    {len(items)}    页"
+            if "报销人" in text and "领款人" in text:
+                for run in p.runs:
+                    if "报销人" in run.text:
+                        run.text = run.text.replace("报销人", f"报销人　{operator}")
+                    if "领款人" in run.text:
+                        run.text = run.text.replace("领款人", f"领款人　{operator}")
+            if "会计主管" in text and accountant:
+                for run in p.runs:
+                    if "会计主管" in run.text:
+                        run.text = run.text.replace("会计主管", f"会计主管　{accountant}")
+            if "出纳" in text and cashier:
+                for run in p.runs:
+                    if "出纳" in run.text:
+                        run.text = run.text.replace("出纳", f"出纳　{cashier}")
         
-        doc.add_paragraph()
-        p = doc.add_paragraph()
-        p.add_run("报销人签字：").bold = True
-        p.add_run(" " * 20)
-        p.add_run("日期：").bold = True
-        p.add_run(datetime.now().strftime("%Y-%m-%d"))
+        # 发票凭证表格（Table 1）
+        if len(doc.tables) > 1:
+            invoice_table = doc.tables[1]
+            if items:
+                invoice_lines = [f"{i.get('purpose','')} ¥{i.get('amount','')}" for i in items]
+                invoice_table.cell(0, 0).text = "发票凭证：" + "；".join(invoice_lines)
         
-        filename = f"报销单_{operator}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
+        filename = f"费用报销单_{operator}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx"
         filepath = os.path.join("generated", filename)
         os.makedirs("generated", exist_ok=True)
         doc.save(filepath)
