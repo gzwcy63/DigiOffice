@@ -340,7 +340,21 @@ async def ocr_invoice(file: UploadFile = File(...)):
                         if purpose:
                             break
         
-        # 5. 如果以上字段提取不完整，尝试用 DeepSeek 补全
+        # ===== 提取所有商品明细 =====
+        items = []
+        for line in words:
+            if "*" in line:
+                parts = line.split("*")
+                # 格式: *大类*商品名  金额  税额
+                if len(parts) >= 3:
+                    name = parts[2].strip()
+                    # 提取后面的金额数字
+                    rest = line.split(name, 1)[1] if name in line else ""
+                    nums = re.findall(r'(\d+\.\d{2})', rest)
+                    item_amount = nums[0] if nums else ""
+                    items.append({"name": name, "amount": item_amount})
+        
+        # ===== 5. 如果以上字段提取不完整，尝试用 DeepSeek 补全
         missing_fields = [k for k in ["number", "amount", "seller", "date"] if not invoice_data[k]]
         if missing_fields:
             print(f"[DEBUG] 字段缺失({len(missing_fields)}个): {missing_fields}，尝试DeepSeek补全...")
@@ -371,21 +385,32 @@ ocr文本：
             except Exception as ds_err:
                 print(f"[DEBUG] DeepSeek补全省略: {ds_err}")
         
-        # 提取品名（第一行有意义的内容）
+        # 提取品名（优先取商品明细第一项）
         purpose = ""
-        for line in words:
-            line_s = line.strip()
-            if len(line_s) >= 4 and not any(kw in line_s for kw in ["发票", "代码", "号码", "日期", "密码", "税控", "校验", "收款", "复核", "开票", "¥", "合计", "小写", "大写", "销售方", "购买方", "纳税人"]):
-                purpose = line_s[:50]
-                break
+        if items:
+            purpose = items[0].get("name", "")
+        if not purpose:
+            for line in words:
+                line_s = line.strip()
+                if len(line_s) >= 4:
+                    skip_kw = ["发票", "代码", "号码", "日期", "密码", "税控", "校验", "收款", "复核",
+                               "开票", "¥", "合计", "小写", "大写", "销售方", "购买方", "纳税人",
+                               "税务", "总局", "电子", "方信", "息", "备注", "开票人", "单位",
+                               "规格", "型号", "单价", "税率", "征收率", "税额", "国宗", "街"]
+                    if any(kw in line_s for kw in skip_kw):
+                        continue
+                    if not any(c in line_s for c in "0123456789"):
+                        purpose = line_s[:50]
+                        break
         
-        print(f"[DEBUG] ✅ 提取结果: 号码={invoice_data['number']}, 金额={invoice_data['amount']}, 销方={invoice_data['seller'][:20] if invoice_data.get('seller') else ''}, 日期={invoice_data['date']}, 品名={purpose[:20]}")
+        print(f"[DEBUG] ✅ 提取结果: 号码={invoice_data['number']}, 金额={invoice_data['amount']}, 销方={invoice_data['seller'][:20] if invoice_data.get('seller') else ''}, 日期={invoice_data['date']}, 品名={purpose[:20]}, 明细={len(items)}条")
         
         return {
             "code": 0,
             "data": {
                 **invoice_data,
-                "purpose": purpose
+                "purpose": purpose,
+                "items": items
             }
         }
         
