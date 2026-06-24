@@ -403,14 +403,23 @@ ocr文本：
                         purpose = line_s[:50]
                         break
         
-        print(f"[DEBUG] ✅ 提取结果: 号码={invoice_data['number']}, 金额={invoice_data['amount']}, 销方={invoice_data['seller'][:20] if invoice_data.get('seller') else ''}, 日期={invoice_data['date']}, 品名={purpose[:20]}, 明细={len(items)}条")
+        # 提取类别（从*大类*商品名中取大类）
+        category = ""
+        for line in words:
+            if "*" in line:
+                parts = line.split("*")
+                if len(parts) >= 2 and parts[1].strip():
+                    category = parts[1].strip()[:20]
+                    break
+        
+        print(f"[DEBUG] ✅ 提取结果: 号码={invoice_data['number']}, 金额={invoice_data['amount']}, 销方={invoice_data['seller'][:20] if invoice_data.get('seller') else ''}, 日期={invoice_data['date']}, 品名={purpose[:20]}, 类别={category}")
         
         return {
             "code": 0,
             "data": {
                 **invoice_data,
                 "purpose": purpose,
-                "items": items
+                "category": category
             }
         }
         
