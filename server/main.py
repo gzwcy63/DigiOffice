@@ -243,33 +243,44 @@ async def ocr_invoice(file: UploadFile = File(...)):
                 break
         
         # ===== 3. 销售方 vs 购买方 =====
+        # OCR文本格式通常是:
+        # 购\n名称：XXX公司\n销\n名称：YYY公司
         # 寻找销方和购方文本区域
         seller_section = ""
         buyer_section = ""
         current_section = ""
-        for line in words:
-            if "购" in line and "方" in line and ("名称" in line or "信" in line):
+        for i, line in enumerate(words):
+            line_c = line.replace(" ", "")
+            # 检查是否包含购/销
+            is_buyer = ("购" in line_c) and ("方" in line_c or len(line_c) <= 3 or "名称" in line_c)
+            is_seller = ("销" in line_c) and ("方" in line_c or len(line_c) <= 3 or "名称" in line_c)
+            
+            if is_buyer:
                 current_section = "buyer"
-                buyer_section += line + "\n"
-            elif "销" in line and "方" in line and ("名称" in line or "信" in line):
+                continue
+            elif is_seller:
                 current_section = "seller"
-                seller_section += line + "\n"
+                continue
             elif current_section == "buyer":
                 buyer_section += line + "\n"
             elif current_section == "seller":
                 seller_section += line + "\n"
         
-        # 从销方区域提取公司名
+        # 从销方区域提取公司名（去掉"名称："前缀）
+        def extract_name(section_text):
+            for line2 in section_text.split("\n"):
+                line2 = line2.strip()
+                # 去掉 "名称：" 前缀
+                if "名称" in line2:
+                    line2 = re.sub(r'(?:名称|名\s*称)\s*[：:]\s*', '', line2).strip()
+                if line2 and len(line2) > 4 and ( "公司" in line2 or "有限" in line2 or "个体" in line2 or "店" in line2 or "厂" in line2):
+                    return line2
+            return ""
+        
         if seller_section:
-            seller_match = re.search(r'名称[：:]\s*(.+?)(?:\n|$)', seller_section)
-            if seller_match:
-                invoice_data["seller"] = seller_match.group(1).strip()
-            else:
-                # 销方区域找公司名
-                for line in seller_section.split("\n"):
-                    if "公司" in line or "有限" in line or "个体" in line or "店" in line or "厂" in line:
-                        invoice_data["seller"] = line.strip()
-                        break
+            invoice_data["seller"] = extract_name(seller_section)
+        if not invoice_data["seller"] and buyer_section:
+            invoice_data["buyer"] = extract_name(buyer_section)
         
         # 如果没找到销方，从购方后面的下一段找
         if not invoice_data["seller"]:
