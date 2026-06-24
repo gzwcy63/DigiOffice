@@ -206,20 +206,20 @@ async def ocr_invoice(file: UploadFile = File(...)):
             "number": "",
             "amount": "",
             "seller": "",
-            "date": ""
+            "date": "",
+            "buyer": ""
         }
         
-        # 合并所有文本为一行，方便搜索
+        # 合并所有文本，方便搜索
         all_text = " ".join(words)
         all_text_clean = all_text.replace(" ", "").replace("\t", "")
         
-        # 1. 发票号码：多种格式
+        # ===== 1. 发票号码 =====
         num_patterns = [
             r'发票号码?[：:]\s*(\w+)',
-            r'发票代码[：:]\s*(\w+)',
             r'No[.：:]\s*(\w+)',
             r'号码[：:]\s*(\w+)',
-            r'(\d{8}[\dXx]{4})',  # 12位发票号
+            r'(\d{8,20})',
         ]
         for pat in num_patterns:
             match = re.search(pat, all_text)
@@ -227,16 +227,14 @@ async def ocr_invoice(file: UploadFile = File(...)):
                 invoice_data["number"] = match.group(1)
                 break
         
-        # 2. 金额
+        # ===== 2. 金额 - 优先找价税合计小写 =====
         amount_patterns = [
-            r'价税合计[\(（]大写[\)）]?[：:^\d]*[\(（]小写[\)）]?[：:]\s*[¥￥]?(\d+\.\d{2})',
-            r'价税合计[：:]\s*[¥￥]?(\d+\.?\d*)',
-            r'合计[：:]\s*[¥￥]?(\d+\.?\d*)',
-            r'小写[\)）]?[：:]\s*[¥￥]?(\d+\.?\d*)',
-            r'金额[：:]\s*[¥￥]?(\d+\.?\d*)',
-            r'税额[：:]\s*[¥￥]?(\d+\.?\d*)',
-            r'价税合计[\(（]小写[\)）]?[：:]*\s*[¥￥]?(\d+\.\d{2})',
-            r'小写[\(（].*?[\)）][：:]*\s*[¥￥]?(\d+\.\d{2})',
+            r'[\(（]小写[\)）]\s*[¥￥]?\s*(\d+\.\d{2})',
+            r'小写[\)）]?[：:]?\s*[¥￥]?\s*(\d+\.\d{2})',
+            r'价税合计[：:]\s*[¥￥]?\s*(\d+\.?\d*)',
+            r'合计[：:]\s*[¥￥]?\s*(\d+\.?\d*)',
+            r'小写[\)）]?[：:]?\s*[¥￥]?\s*(\d+\.?\d*)',
+            r'金额[：:]\s*[¥￥]?\s*(\d+\.?\d*)',
         ]
         for pat in amount_patterns:
             match = re.search(pat, all_text)
@@ -244,35 +242,62 @@ async def ocr_invoice(file: UploadFile = File(...)):
                 invoice_data["amount"] = match.group(1)
                 break
         
-        # 3. 销售方（销方名称）
-        seller_patterns = [
-            r'(?:销售方|销方|收款人)[\(（]名称[\)）]?[：:]\s*(.+?)(?:\s{2,}|$)',
-            r'(?:销售方|销方)[：:]\s*(.+?)(?:\s{2,}|$)',
-            r'名称[：:]\s*(.+?公司)',
-            r'(.+?有限公司)',
-            r'(.+?有限责任公司)',
-            r'(.+?集团)',
-            r'(.+?厂)',
-        ]
+        # ===== 3. 销售方 vs 购买方 =====
+        # 寻找销方和购方文本区域
+        seller_section = ""
+        buyer_section = ""
+        current_section = ""
         for line in words:
-            for pat in seller_patterns:
-                match = re.search(pat, line)
-                if match:
-                    name = match.group(1).strip()
-                    if len(name) > 2 and len(name) < 50:
-                        invoice_data["seller"] = name
-                        break
-            if invoice_data["seller"]:
-                break
+            if "购" in line and "方" in line and ("名称" in line or "信" in line):
+                current_section = "buyer"
+                buyer_section += line + "\n"
+            elif "销" in line and "方" in line and ("名称" in line or "信" in line):
+                current_section = "seller"
+                seller_section += line + "\n"
+            elif current_section == "buyer":
+                buyer_section += line + "\n"
+            elif current_section == "seller":
+                seller_section += line + "\n"
         
-        # 后备：任何包含"公司"的行
+        # 从销方区域提取公司名
+        if seller_section:
+            seller_match = re.search(r'名称[：:]\s*(.+?)(?:\n|$)', seller_section)
+            if seller_match:
+                invoice_data["seller"] = seller_match.group(1).strip()
+            else:
+                # 销方区域找公司名
+                for line in seller_section.split("\n"):
+                    if "公司" in line or "有限" in line or "个体" in line or "店" in line or "厂" in line:
+                        invoice_data["seller"] = line.strip()
+                        break
+        
+        # 如果没找到销方，从购方后面的下一段找
         if not invoice_data["seller"]:
-            for line in words:
-                if "公司" in line or "有限" in line:
-                    invoice_data["seller"] = line.strip().replace(" ", "")
+            found_buyer = False
+            for i, line in enumerate(words):
+                if "购" in line and "方" in line:
+                    found_buyer = True
+                    continue
+                if found_buyer and ("销" in line and "方" in line):
+                    # 后面的行就是销方
+                    for j in range(i+1, min(i+5, len(words))):
+                        if "公司" in words[j] or "有限" in words[j] or "个体" in words[j] or "店" in words[j]:
+                            invoice_data["seller"] = words[j].strip()
+                            break
                     break
         
-        # 4. 开票日期
+        # 后备：任何包含"公司"且不是购方名称的行
+        if not invoice_data["seller"]:
+            buyer_name = ""
+            for line in words:
+                if "购" in line and "方" in line:
+                    continue
+                if "公司" in line or "有限" in line or "个体" in line:
+                    if line not in buyer_name:
+                        invoice_data["seller"] = line.strip()
+                        break
+        
+        # ===== 4. 开票日期 =====
         date_patterns = [
             r'开票日期[：:]\s*(\d{4}[-年.]\d{1,2}[-月.]\d{1,2})',
             r'日期[：:]\s*(\d{4}[-年.]\d{1,2}[-月.]\d{1,2})',
@@ -281,9 +306,39 @@ async def ocr_invoice(file: UploadFile = File(...)):
         for pat in date_patterns:
             match = re.search(pat, all_text)
             if match:
-                raw = match.group(0)
+                raw = match.group(1) if match.lastindex == 1 else match.group(0)
                 invoice_data["date"] = raw.replace("年", "-").replace("月", "-").replace("日", "").replace(".", "-")
                 break
+        
+        # ===== 5. 品名 =====
+        purpose = ""
+        for line in words:
+            line_s = line.strip()
+            # 跳过短行和标题行
+            if len(line_s) < 4:
+                continue
+            # 跳过税务/发票/号码等无关行
+            skip_kw = ["发票", "代码", "号码", "日期", "密码", "税控", "校验", "收款", "复核",
+                       "开票", "¥", "合计", "小写", "大写", "销售方", "购买方", "纳税人",
+                       "税务", "总局", "电子", "方信", "息", "备注", "开票人", "单位",
+                       "规格", "型号", "单价", "税率", "征收率", "税额"]
+            if any(kw in line_s for kw in skip_kw):
+                continue
+            # 取第一行看起来像商品名的
+            if not any(c in line_s for c in "0123456789"):
+                purpose = line_s[:50]
+                break
+        
+        # 如果没找到，取包含*的商品行
+        if not purpose:
+            for line in words:
+                if "*" in line:
+                    # 提取*后面和第二个*之间的内容
+                    parts = line.split("*")
+                    if len(parts) >= 3:
+                        purpose = parts[2].strip()[:50]
+                        if purpose:
+                            break
         
         # 5. 如果以上字段提取不完整，尝试用 DeepSeek 补全
         missing_fields = [k for k in ["number", "amount", "seller", "date"] if not invoice_data[k]]
