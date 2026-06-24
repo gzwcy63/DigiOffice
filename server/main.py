@@ -488,6 +488,29 @@ async def download_file(filename: str):
         raise HTTPException(status_code=404, detail="文件不存在")
     return FileResponse(filepath, filename=filename)
 
+# ================= 调试端点 =================
+@app.post("/api/debug_ocr")
+async def debug_ocr(file: UploadFile = File(...)):
+    """调试OCR，返回原始识别内容"""
+    import json
+    image_data = await file.read()
+    image_base64 = base64.b64encode(image_data).decode('utf-8')
+    token = get_baidu_ocr_token()
+    if not token:
+        return {"error": "无法获取百度Token"}
+    
+    url = f"https://aip.baidubce.com/rest/2.0/ocr/v1/general_basic?access_token={token}"
+    resp = requests.post(url, data={"image": image_base64}, headers={"content-type": "application/x-www-form-urlencoded"}, timeout=30)
+    
+    result = resp.json()
+    words = [item["words"] for item in result.get("words_result", [])]
+    
+    return {
+        "baidu_raw": result,
+        "words": words,
+        "full_text": "\n".join(words)
+    }
+
 # ================= 启动服务 =================
 if __name__ == "__main__":
     import uvicorn
